@@ -7,6 +7,8 @@
 # langgraph adds a `__getattr__` fallback (strict mode's `warn_unused_ignores`).
 
 import re
+import unicodedata
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -341,6 +343,111 @@ class TestDevanagariBoundaryAsymmetry:
 
         assert len(matches) == 1
         assert matches[0]["value"] == mac
+
+
+# Preceding words whose final character is a letter (`Lo`/`Ll`). Python counts
+# these as word characters, so a `\b` anchored pattern found no boundary between
+# them and an adjacent ASCII value, and the value was missed.
+LETTER_FINAL_NEIGHBORS = [
+    pytest.param("\u0908\u092e\u0947\u0932", id="Lo-devanagari"),
+    pytest.param("\u0628\u0631\u064a\u062f", id="Lo-arabic"),
+    pytest.param("\u05d3\u05d5\u05d0\u05e8", id="Lo-hebrew"),
+    pytest.param("\u0e2d\u0e35\u0e40\u0e21\u0e25", id="Lo-thai"),
+    pytest.param("\u0987\u09ae\u09c7\u09b2", id="Lo-bengali"),
+    pytest.param("\u8054\u7cfb", id="Lo-han"),
+    pytest.param("\u043f\u043e\u0447\u0442\u0430", id="Ll-cyrillic"),
+    pytest.param("caf\u00e9", id="Ll-latin"),
+]
+
+# The same words respelled to end in a combining mark (`Mc`/`Mn`). Marks are not
+# word characters, so the boundary did fire and the value was found. Same
+# scripts, opposite outcome.
+MARK_FINAL_NEIGHBORS = [
+    pytest.param("\u0939\u093f\u0902\u0926\u0940", id="Mc-devanagari"),
+    pytest.param("\u0987\u09ae\u09c7\u09b2\u09bf", id="Mc-bengali"),
+    pytest.param("\u0628\u0631\u064a\u062f\u064e", id="Mn-arabic"),
+    pytest.param("\u05d3\u05d5\u05d0\u05e8\u05b0", id="Mn-hebrew"),
+    pytest.param("\u0e2d\u0e35\u0e40\u0e21\u0e25\u0e34", id="Mn-thai"),
+]
+
+DETECTORS_AND_VALUES = [
+    (detect_email, "alice@example.com"),
+    (detect_ip, "192.168.1.100"),
+    (detect_mac_address, "00:1A:2B:3C:4D:5E"),
+]
+
+
+class TestBoundaryDependsOnUnicodeCategory:
+    r"""The old boundary keyed off a per-character property, not a script.
+
+    `\b` sits between a word and a non-word character, and Python decides
+    "word" with `str.isalnum()`. That is true for every letter category
+    (`Lo`, `Ll`, ...) and false for every combining mark category (`Mn`,
+    `Mc`). So whether an adjacent value was found depended on the Unicode
+    category of the *final character of the preceding word* -- letter-final
+    words hid the value, mark-final words did not.
+
+    Grouping cases by script hides this, because a script's coverage depends
+    on which sample word is chosen. The Arabic pair above is letter-final and
+    mark-final respectively, and only the second was ever detected. Grouping
+    by category cannot pick a lucky word.
+    """
+
+    @pytest.mark.parametrize("neighbor", LETTER_FINAL_NEIGHBORS + MARK_FINAL_NEIGHBORS)
+    @pytest.mark.parametrize(("detector", "value"), DETECTORS_AND_VALUES)
+    def test_value_found_regardless_of_preceding_category(
+        self,
+        detector: Callable[[str], list[PIIMatch]],
+        value: str,
+        neighbor: str,
+    ) -> None:
+        """Letter-final and mark-final words must behave identically."""
+        content = f"{neighbor}{value}"
+        matches = detector(content)
+
+        assert len(matches) == 1, f"not detected in {content!r}"
+        assert matches[0]["value"] == value
+        assert content[matches[0]["start"] : matches[0]["end"]] == value
+
+
+class TestUnicodeNormalizationConsistency:
+    r"""The same visible word must not change the outcome by normal form.
+
+    `caf\u00e9` is one character (U+00E9, `Ll`) in NFC and two (`e` + U+0301,
+    `Mn`) in NFD. Under `\b` the NFD spelling found an adjacent address and
+    the NFC spelling did not, so identical-looking text redacted or did not
+    depending on where it came from -- NFD is what macOS filesystems hand
+    you, NFC is what most web form submissions carry -- with nothing visible
+    to tell them apart.
+    """
+
+    NFC = unicodedata.normalize("NFC", "caf\u00e9")
+    NFD = unicodedata.normalize("NFD", "caf\u00e9")
+
+    def test_normal_forms_differ_but_look_identical(self) -> None:
+        """Guard the premise, so the tests below cannot silently degenerate."""
+        assert self.NFC != self.NFD
+        assert len(self.NFC) == 4
+        assert len(self.NFD) == 5
+        assert unicodedata.category(self.NFC[-1]) == "Ll"
+        assert unicodedata.category(self.NFD[-1]) == "Mn"
+
+    @pytest.mark.parametrize(("detector", "value"), DETECTORS_AND_VALUES)
+    def test_both_normal_forms_detect_the_same_value(
+        self,
+        detector: Callable[[str], list[PIIMatch]],
+        value: str,
+    ) -> None:
+        results = []
+        for word in (self.NFC, self.NFD):
+            content = f"{word}{value}"
+            matches = detector(content)
+
+            assert len(matches) == 1, f"not detected in {content!r}"
+            assert content[matches[0]["start"] : matches[0]["end"]] == value
+            results.append(matches[0]["value"])
+
+        assert results[0] == results[1] == value
 
 
 class TestNonAsciiEndToEnd:
