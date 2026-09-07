@@ -74,6 +74,9 @@ NON_ASCII_NEIGHBORS = [
     pytest.param("\u043f\u043e\u0447\u0442\u0430", id="cyrillic"),
     pytest.param("\u0628\u0631\u064a\u062f", id="arabic"),
     pytest.param("caf\u00e9", id="accented-latin"),
+    # Devanagari word ending in a base consonant (`\u0932`, category Lo). See
+    # `TestDevanagariBoundaryAsymmetry` for why the final character matters.
+    pytest.param("\u0908\u092e\u0947\u0932", id="devanagari"),
 ]
 
 
@@ -296,6 +299,48 @@ class TestMACAddressNonAsciiDetection:
         assert len(matches) == 1
         match = matches[0]
         assert content[match["start"] : match["end"]] == match["value"]
+
+
+class TestDevanagariBoundaryAsymmetry:
+    r"""Detection must not depend on how the preceding word happens to be spelled.
+
+    Devanagari is the sharpest case for this bug. Under a `\b` anchored pattern
+    the boundary fires or not depending on the *last character* of the preceding
+    word: base letters are word characters, but combining vowel signs, virama and
+    anusvara are not. So an address after a matra-final word (`\u0939\u093f\u0902\u0926\u0940`,
+    ending U+0940, category Mc) was found, while the same address after a
+    consonant-final word (`\u0908\u092e\u0947\u0932`, ending U+0932, category Lo)
+    was missed. Detection that varies with orthography is worse than detection
+    that uniformly fails, because spot checks pass and the gap stays hidden.
+    """
+
+    CONSONANT_FINAL = "\u0908\u092e\u0947\u0932"
+    MATRA_FINAL = "\u0939\u093f\u0902\u0926\u0940"
+
+    @pytest.mark.parametrize("neighbor", [CONSONANT_FINAL, MATRA_FINAL])
+    def test_email_found_after_either_devanagari_ending(self, neighbor: str) -> None:
+        email = "alice@example.com"
+        matches = detect_email(f"{neighbor}{email}")
+
+        assert len(matches) == 1
+        assert matches[0]["value"] == email
+
+    @pytest.mark.parametrize("neighbor", [CONSONANT_FINAL, MATRA_FINAL])
+    def test_ip_found_after_either_devanagari_ending(self, neighbor: str) -> None:
+        ip = "192.168.1.100"
+        content = f"{neighbor}{ip}"
+        matches = detect_ip(content)
+
+        assert len(matches) == 1
+        assert content[matches[0]["start"] : matches[0]["end"]] == ip
+
+    @pytest.mark.parametrize("neighbor", [CONSONANT_FINAL, MATRA_FINAL])
+    def test_mac_found_after_either_devanagari_ending(self, neighbor: str) -> None:
+        mac = "00:1A:2B:3C:4D:5E"
+        matches = detect_mac_address(f"{neighbor}{mac}")
+
+        assert len(matches) == 1
+        assert matches[0]["value"] == mac
 
 
 class TestNonAsciiEndToEnd:
