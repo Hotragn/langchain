@@ -51,8 +51,19 @@ Detector = Callable[[str], list[PIIMatch]]
 # count as word characters, so `\b` does not fire between them and an adjacent
 # ASCII value. A detector anchored on `\b` therefore cannot see PII that sits
 # directly against non-English text, as in "联系alice@example.com". These
-# lookarounds reproduce `\b` exactly for ASCII input while treating every
-# non-ASCII character as a separator.
+# lookarounds treat every non-ASCII character as a separator.
+#
+# `\b` is a transition assertion; these lookarounds are one-sided. The two agree
+# exactly when the adjacent character inside the match is itself an ASCII word
+# character. That holds at both ends for `detect_ip` and `detect_mac_address`,
+# and at the trailing end for `detect_email`, so for those the two constructs are
+# interchangeable. It does not hold at the leading end of `detect_email`, whose
+# local part may begin with `.`, `%`, `+` or `-`. There `start` and `value` move
+# by one relative to `\b`, in whichever direction the preceding character
+# dictates: the punctuation is included after a non-word character (where `\b`
+# found no transition) and excluded after a word character (where it did). The
+# address itself is detected identically either way; only the span differs.
+# See `test_email_local_part_leading_punctuation_spans`.
 _ASCII_BOUNDARY_START = r"(?<![0-9A-Za-z_])"
 _ASCII_BOUNDARY_END = r"(?![0-9A-Za-z_])"
 

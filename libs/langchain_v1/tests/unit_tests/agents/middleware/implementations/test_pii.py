@@ -140,6 +140,46 @@ class TestEmailDetection:
         """The TLD class was `[A-Z|a-z]`, which also accepted a literal `|`."""
         assert detect_email("alice@example.c|m") == []
 
+    @pytest.mark.parametrize(
+        ("content", "start", "end", "value"),
+        [
+            # Preceded by a non-word character: `\b` needs a transition and finds
+            # none between " " and "+", so it used to start at "b". The one-sided
+            # ASCII boundary is satisfied, so the "+" is now included.
+            ("Contact +bob@ex.com now", 8, 19, "+bob@ex.com"),
+            # Preceded by a word character: `\b` did fire and included the "+".
+            # The one-sided boundary rejects it, so the "+" is now excluded.
+            ("from=alice@ex.com+tag@ex.com", 18, 28, "tag@ex.com"),
+            ("mailto:bob@ex.com-carol@ex.com", 18, 30, "carol@ex.com"),
+            # Preceded by non-ASCII: both agree, because the neighbor is a word
+            # character to `\b` and a non-word character to the ASCII boundary.
+            ("联系+alice@example.com", 2, 20, "+alice@example.com"),
+            ("связь.bob@ex.com", 5, 16, ".bob@ex.com"),
+        ],
+    )
+    def test_email_local_part_leading_punctuation_spans(
+        self, content: str, start: int, end: int, value: str
+    ) -> None:
+        r"""Pin the span when the local part begins with `.`, `%`, `+` or `-`.
+
+        `\b` is a transition assertion; the ASCII boundary used here is one-sided.
+        The two agree only when the first character of the match is itself an ASCII
+        word character. That always holds for `detect_ip` and `detect_mac_address`,
+        where the two constructs are interchangeable, but not at the leading end of
+        `detect_email`, whose local part may begin with punctuation.
+
+        The address is detected identically either way -- only `start` and `value`
+        move, and the direction depends on the preceding character, as the cases
+        below show. Pin the offsets rather than truthiness: every case here passes a
+        boolean assertion under both behaviors, so only the span distinguishes them.
+        """
+        match = detect_email(content)[-1]
+
+        assert match["start"] == start
+        assert match["end"] == end
+        assert match["value"] == value
+        assert content[match["start"] : match["end"]] == match["value"]
+
     def test_no_email(self) -> None:
         content = "This text has no email addresses."
         matches = detect_email(content)
