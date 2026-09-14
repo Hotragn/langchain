@@ -61,9 +61,16 @@ Detector = Callable[[str], list[PIIMatch]]
 # local part may begin with `.`, `%`, `+` or `-`. There `start` and `value` move
 # by one relative to `\b`, in whichever direction the preceding character
 # dictates: the punctuation is included after a non-word character (where `\b`
-# found no transition) and excluded after a word character (where it did). The
-# address itself is detected identically either way; only the span differs.
+# found no transition) and excluded after a word character (where it did).
 # See `test_email_local_part_leading_punctuation_spans`.
+#
+# For a well-formed address the span is the only difference, and including the
+# leading punctuation is the more complete redaction, since `+`, `-` and `%` are
+# valid leading local-part characters. Known residual: on malformed input the
+# earlier start can let the greedy local part settle on a shorter valid match and
+# the scan then resumes past the real address, as in "cc: -@list.dan@ex.org",
+# where `-@list.dan` matches and "@ex.org" survives redaction. Requiring an
+# alphanumeric in the local part does not close that class.
 _ASCII_BOUNDARY_START = r"(?<![0-9A-Za-z_])"
 _ASCII_BOUNDARY_END = r"(?![0-9A-Za-z_])"
 
