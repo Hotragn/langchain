@@ -517,6 +517,45 @@ class TestNonAsciiEndToEnd:
         assert content.startswith("\u8054\u7cfb")
         assert content.endswith("\u8054\u7cfb")
 
+    @pytest.mark.parametrize(
+        ("original", "expected"),
+        [
+            pytest.param("Contact +bob@ex.com", "Contact [REDACTED_EMAIL]", id="ascii-plus"),
+            pytest.param("Reach -carol@ex.com", "Reach [REDACTED_EMAIL]", id="ascii-hyphen"),
+            pytest.param("Write %dave@ex.com", "Write [REDACTED_EMAIL]", id="ascii-percent"),
+            pytest.param("\u8054\u7cfb.bob@ex.com", "\u8054\u7cfb[REDACTED_EMAIL]", id="cjk-dot"),
+            pytest.param(
+                "caf\u00e9.bob@ex.com", "caf\u00e9[REDACTED_EMAIL]", id="accented-latin-nfc-dot"
+            ),
+            pytest.param(
+                "cafe\u0301.bob@ex.com",
+                "cafe\u0301[REDACTED_EMAIL]",
+                id="accented-latin-nfd-dot",
+            ),
+        ],
+    )
+    def test_redact_leaves_no_local_part_residue(self, original: str, expected: str) -> None:
+        r"""A local part opening with punctuation must be redacted whole.
+
+        Every strategy slices the content by `start` and `end`, so a start offset
+        that lands one character late leaves that character in the output. Under
+        `\\b` the offset moved with the category of the preceding character, so
+        `Contact +bob@ex.com` redacted to `Contact +[REDACTED_EMAIL]` \u2014 a fragment
+        of the address surviving the step that was asked to remove it. `+`, `-`
+        and `%` are valid leading local-part characters under RFC 5322's dot-atom
+        rule, so the truncated form is not the address.
+
+        The last two cases are the same address in NFC and NFD. They render
+        identically, and must redact identically.
+        """
+        middleware = PIIMiddleware("email", strategy="redact")
+        state = AgentState[Any](messages=[HumanMessage(original)])
+
+        result = middleware.before_model(state, Runtime())
+
+        assert result is not None
+        assert result["messages"][0].content == expected
+
 
 class TestURLDetection:
     """Test URL detection."""
